@@ -1,0 +1,2 @@
+requests>=2.31
+jshunter @ git+https://github.com/sourabhbeni/jshunter.git
