@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reconpipe"
+version = "0.1.0"
+description = "Passive recon pipeline for web bug-bounty targets"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.31"]
+
+[project.scripts]
+reconpipe = "reconpipe.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reconpipe*"]
