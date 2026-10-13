@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reconpipe — passive recon for bug bounty</title>
+<style>
+:root{--bg:#0b0e14;--card:#151a24;--line:#232a3a;--txt:#dbe2f0;--dim:#8b94a7;--acc:#0071e3;--crit:#ff5c5c;--high:#ffa94d;--med:#ffd43b;--low:#7dd3a8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,system-ui,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:26px;margin:0 0 4px}.sub{color:var(--dim);margin:0 0 22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+input[type=text]{flex:1;min-width:220px;background:#0e1219;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:11px 14px;font-size:15px}
+button{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:11px 22px;font-size:15px;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+label.auth{display:flex;gap:8px;align-items:flex-start;color:var(--dim);font-size:13px;margin:12px 0 0;cursor:pointer}
+.bar{height:8px;background:#0e1219;border-radius:6px;overflow:hidden;margin:12px 0}
+.bar>i{display:block;height:100%;background:var(--acc);width:0;transition:width .3s}
+.log{font-family:ui-monospace,monospace;font-size:13px;color:var(--dim);max-height:150px;overflow:auto}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:#0e1219;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:22px}.stat span{color:var(--dim);font-size:12px}
+.badge{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 8px;margin-right:6px}
+.CRITICAL{background:#3a1414;color:var(--crit)}.HIGH{background:#3a2a10;color:var(--high)}
+.MEDIUM{background:#3a3410;color:var(--med)}.LOW{background:#123a24;color:var(--low)}
+.finding{border-top:1px solid var(--line);padding:10px 0;font-size:13px}
+.finding code{color:var(--dim);word-break:break-all}
+.mono{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all}
+h2{font-size:17px;margin:0 0 10px}.hidden{display:none}
+.note{color:var(--dim);font-size:13px}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>reconpipe</h1>
+  <p class="sub">Passive recon pipeline — subdomains · live hosts · JS secrets · wayback URLs. GETs only, no exploitation.</p>
+
+  <div class="card">
+    <div class="row">
+      <input id="domain" type="text" placeholder="example.com or sub.example.com" autocomplete="off">
+      <button id="go">Run recon</button>
+    </div>
+    <label class="auth"><input id="auth" type="checkbox"> I am authorized to recon this target — my own asset, an in-scope bug-bounty target, or a lab. I understand most programs count recon as testing.</label>
+  </div>
+
+  <div id="prog" class="card hidden">
+    <div class="bar"><i id="barfill"></i></div>
+    <div id="status" class="note">starting…</div>
+    <div id="log" class="log"></div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="stats" id="stats"></div>
+    <div class="card"><h2>JS secrets <span class="note">(verify before reporting — a match is a lead, not a vuln)</span></h2><div id="secrets"></div></div>
+    <div class="card"><h2>Hidden endpoints</h2><div id="endpoints"></div></div>
+    <div class="card"><h2>Interesting wayback URLs</h2><div id="urls"></div></div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function log(m){const el=$('log');el.innerHTML+=m+'<br>';el.scrollTop=el.scrollHeight;}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+$('go').onclick=async()=>{
+  const domain=$('domain').value.trim();
+  if(!domain)return alert('Enter a domain');
+  if(!$('auth').checked)return alert('Please confirm authorization first.');
+  $('go').disabled=true;$('results').classList.add('hidden');$('prog').classList.remove('hidden');
+  $('log').innerHTML='';$('barfill').style.width='0';
+  let r=await fetch('/api/scans',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({domain,authorized:true})});
+  let j=await r.json();
+  if(!r.ok){$('status').textContent='Error: '+(j.detail||r.status);$('go').disabled=false;return;}
+  const id=j.scan_id;log('scan '+id+' created');
+  let lastDone=-1;
+  while(true){
+    await sleep(2500);
+    r=await fetch('/api/scans/'+id);j=await r.json();
+    if(j.status==='enumerating'){$('status').textContent='enumerating subdomains + harvesting wayback…';continue;}
+    if(j.status==='error'){$('status').textContent='Error: '+esc(j.error||'?');break;}
+    const total=j.hosts.length||1, done=total-j.pending;
+    $('barfill').style.width=Math.round(done/total*100)+'%';
+    $('status').textContent=`probing hosts… ${done}/${total} done`;
+    if(done!==lastDone){lastDone=done;log(`host ${done}/${total} processed`);}
+    if(j.status==='done')break;
+  }
+  $('barfill').style.width='100%';$('status').textContent='done';
+  render(j);$('go').disabled=false;
+};
+
+function render(j){
+  const c=j.counts;
+  $('stats').innerHTML=`
+    <div class="stat"><b>${c.subdomains}</b><span>subdomains</span></div>
+    <div class="stat"><b>${c.live}</b><span>live hosts</span></div>
+    <div class="stat"><b>${c.secrets}</b><span>JS secrets</span></div>
+    <div class="stat"><b>${c.endpoints}</b><span>endpoints</span></div>
+    <div class="stat"><b>${c.interesting}</b><span>wayback URLs</span></div>`;
+  let sh='';
+  for(const h of j.jsResults||[])for(const f of h.files||[])for(const s of f.secrets||[]){
+    sh+=`<div class="finding"><span class="badge ${s.severity}">${s.severity}</span><b>${esc(s.rule)}</b> <code>${esc(s.preview)}</code><br><span class="note">${esc(s.description)} — in ${esc(f.url)}</span></div>`;
+  }
+  $('secrets').innerHTML=sh||'<span class="note">(none)</span>';
+  let ep='';
+  for(const h of j.jsResults||[])for(const f of h.files||[]){
+    const eps=(f.endpoints||[]).slice(0,12);
+    if(eps.length){ep+=`<div class="finding"><code>${esc(f.url)}</code><br>`+eps.map(e=>`<span class="mono">(${esc(e.kind)}) ${esc(e.value)}</span>`).join('<br>')+'</div>';}
+  }
+  $('endpoints').innerHTML=ep||'<span class="note">(none)</span>';
+  const wb=(j.wayback&&j.wayback.interesting||[]).slice(0,40);
+  $('urls').innerHTML=wb.length?wb.map(u=>`<div class="finding"><span class="mono">${esc(u.url)}</span> <span class="note">[${esc(u.reason)}]</span></div>`).join(''):'<span class="note">(none)</span>';
+  if(j.enumNote)$('urls').innerHTML+=`<p class="note">${esc(j.enumNote)}</p>`;
+  $('results').classList.remove('hidden');
+}
+</script>
+</body>
+</html>
